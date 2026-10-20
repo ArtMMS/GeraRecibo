@@ -2,7 +2,7 @@ import ctypes
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QLocale
+from PySide6.QtCore import QLocale, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -29,6 +29,12 @@ def main():
     app.setWindowIcon(QIcon(caminho_recurso("assets/icon.ico")))
 
     janela = JanelaPrincipal()
+
+    # Tamanho fixo: sem maximizar/tela cheia e sem redimensionar
+    janela.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
+    janela.adjustSize()
+    janela.setFixedSize(janela.size())
+
     janela.show()
     sys.exit(app.exec())
 
