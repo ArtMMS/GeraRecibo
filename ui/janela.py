@@ -1,12 +1,14 @@
 import shutil
+import sqlite3
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QUrl
+from PySide6.QtCore import QDate, QStringListModel, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDateEdit,
     QDialog,
     QDoubleSpinBox,
@@ -24,10 +26,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core import banco
 from core.pdf import caminho_disponivel, gerar_pdf, pasta_recibos
 from core.recibo import Recibo
 from core.validacao import validar_cnpj, validar_cpf
 from ui.area_logo import AreaLogo
+from ui.historico import DialogoHistorico
 from ui.preview import DialogoPreview
 
 MASCARA_CPF = "000.000.000-00;_"
@@ -59,6 +63,7 @@ class JanelaPrincipal(QMainWindow):
         self.layout_principal.addLayout(self._criar_botoes())
 
         self._conectar_limpeza_de_erros()
+        self._configurar_autocompletar()
 
     # ---------- Grupos do formulário ----------
 
@@ -198,6 +203,9 @@ class JanelaPrincipal(QMainWindow):
     def _criar_botoes(self):
         layout = QHBoxLayout()
 
+        self.botao_historico = QPushButton("Histórico")
+        self.botao_historico.clicked.connect(self._abrir_historico)
+
         self.botao_limpar = QPushButton("Limpar")
         self.botao_limpar.clicked.connect(self._limpar)
 
@@ -205,10 +213,52 @@ class JanelaPrincipal(QMainWindow):
         self.botao_gerar.setDefault(True)
         self.botao_gerar.clicked.connect(self._gerar_pdf)
 
+        layout.addWidget(self.botao_historico)
         layout.addStretch()
         layout.addWidget(self.botao_limpar)
         layout.addWidget(self.botao_gerar)
         return layout
+
+    # ---------- Autocompletar clientes ----------
+
+    def _configurar_autocompletar(self):
+        self.modelo_clientes = QStringListModel(self)
+
+        self.completer = QCompleter(self.modelo_clientes, self)
+        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.completer.activated[str].connect(self._preencher_cliente)
+
+        self.input_nome.setCompleter(self.completer)
+        self._atualizar_clientes()
+
+    def _atualizar_clientes(self):
+        try:
+            self.modelo_clientes.setStringList(banco.clientes())
+        except sqlite3.Error:
+            self.modelo_clientes.setStringList([])
+
+    def _preencher_cliente(self, nome):
+        """Preenche documento e endereço com o último recibo desse cliente."""
+        try:
+            anterior = banco.ultimo_do_cliente(nome)
+        except sqlite3.Error:
+            return
+
+        if not anterior:
+            return
+
+        # O tipo vem primeiro: trocar o tipo limpa o campo do documento
+        self.combo_tipo.setCurrentIndex(0 if anterior.tipo_documento == "CPF" else 1)
+        self.input_documento.setText(anterior.documento)
+
+        self.input_rua.setText(anterior.rua)
+        self.input_numero.setText(anterior.numero)
+        self.input_bairro.setText(anterior.bairro)
+        self.input_cidade.setText(anterior.cidade)
+        self.input_estado.setText(anterior.estado)
+
+        self.input_produto.setFocus()
 
     # ---------- Listas de campos ----------
 
@@ -357,6 +407,8 @@ class JanelaPrincipal(QMainWindow):
             estado=self.input_estado.text().strip(),
         )
 
+    # ---------- Emissão ----------
+
     def _gerar_pdf(self):
         erros = self._validar()
         if erros:
@@ -369,10 +421,26 @@ class JanelaPrincipal(QMainWindow):
 
         recibo = self._coletar_dados()
 
+        try:
+            recibo.numero_recibo = banco.proximo_numero()
+        except sqlite3.Error as erro:
+            QMessageBox.critical(
+                self, "Erro no banco de dados", f"Não foi possível acessar o histórico.\n\n{erro}"
+            )
+            return
+
+        self._emitir(recibo, novo=True)
+
+    def _emitir(self, recibo, novo):
+        """Prévia → salvar PDF → registrar no banco → abrir/avisar.
+
+        novo=True: recibo novo (grava no banco).
+        novo=False: reemissão (só atualiza o caminho do PDF).
+        """
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as pasta_temp:
             previa = Path(pasta_temp) / "previa.pdf"
 
-            # 1. Gera uma prévia temporária
+            # 1. Gera uma prévia temporária (já com o número)
             try:
                 gerar_pdf(recibo, previa)
             except Exception as erro:
@@ -384,7 +452,7 @@ class JanelaPrincipal(QMainWindow):
             if dialogo.exec() != QDialog.DialogCode.Accepted:
                 return
 
-            # 3. Salva na pasta escolhida
+            # 3. Salva o PDF na pasta escolhida
             try:
                 destino = caminho_disponivel(recibo, self.pasta_destino)
                 shutil.copyfile(previa, destino)
@@ -400,15 +468,67 @@ class JanelaPrincipal(QMainWindow):
                 QMessageBox.critical(self, "Erro ao salvar", f"Não foi possível salvar o PDF.\n\n{erro}")
                 return
 
-        # 4. Abre o PDF ou avisa onde ficou
+        # 4. Registra no banco
+        try:
+            if novo:
+                banco.salvar(recibo, destino)
+            else:
+                banco.atualizar_caminho(recibo.numero_recibo, destino)
+        except sqlite3.Error as erro:
+            if novo:
+                destino.unlink(missing_ok=True)  # não deixa PDF "órfão" sem registro
+            QMessageBox.critical(
+                self,
+                "Erro no banco de dados",
+                f"Não foi possível registrar o recibo no histórico.\n\n{erro}",
+            )
+            return
+
+        if novo:
+            self._atualizar_clientes()
+
+        # 5. Abre o PDF ou avisa onde ficou
         if self.check_abrir.isChecked():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(destino)))
         else:
             QMessageBox.information(
                 self,
                 "Recibo salvo",
-                f"Recibo salvo com sucesso!\n\n{destino}",
+                f"Recibo Nº {recibo.numero_formatado} salvo com sucesso!\n\n{destino}",
             )
+
+    # ---------- Histórico ----------
+
+    def _abrir_historico(self):
+        try:
+            dialogo = DialogoHistorico(self)
+        except sqlite3.Error as erro:
+            QMessageBox.critical(
+                self, "Erro no banco de dados", f"Não foi possível abrir o histórico.\n\n{erro}"
+            )
+            return
+
+        dialogo.reemitir.connect(lambda numero: self._reemitir(numero, dialogo))
+        dialogo.exec()
+
+    def _reemitir(self, numero, historico=None):
+        try:
+            resultado = banco.obter(numero)
+        except sqlite3.Error as erro:
+            QMessageBox.critical(self, "Erro no banco de dados", str(erro))
+            return
+
+        if not resultado:
+            QMessageBox.warning(self, "Recibo não encontrado", f"O recibo Nº {numero:04d} não existe.")
+            return
+
+        recibo, _caminho_antigo = resultado
+        self._emitir(recibo, novo=False)
+
+        if historico:
+            historico.atualizar()
+
+    # ---------- Limpar ----------
 
     def _limpar(self):
         """Limpa cliente, pedido e endereço. Os dados do emitente (e a logo) são mantidos."""
