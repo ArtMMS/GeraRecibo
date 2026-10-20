@@ -1,5 +1,4 @@
 import re
-import sys
 import unicodedata
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -11,6 +10,8 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+from core.caminhos import pasta
 
 # Página: largura do A4, altura calculada pelo conteúdo
 LARGURA_PAGINA = A4[0]
@@ -27,14 +28,7 @@ LOGO_LARGURA_MAX = 4 * cm
 
 def pasta_recibos():
     """Pasta padrão 'recibos/' ao lado do projeto (ou ao lado do .exe)."""
-    if getattr(sys, "frozen", False):
-        base = Path(sys.executable).parent
-    else:
-        base = Path(__file__).resolve().parent.parent
-
-    pasta = base / "recibos"
-    pasta.mkdir(exist_ok=True)
-    return pasta
+    return pasta("recibos")
 
 
 def _slug(texto, limite=40):
@@ -44,17 +38,21 @@ def _slug(texto, limite=40):
     return texto[:limite].strip("-") or "cliente"
 
 
-def caminho_disponivel(recibo, pasta=None):
-    """Ex.: <pasta>/recibo_2026-07-23_colegio-jardim.pdf (sem sobrescrever)."""
-    pasta = Path(pasta) if pasta else pasta_recibos()
-    pasta.mkdir(parents=True, exist_ok=True)
+def caminho_disponivel(recibo, pasta_destino=None):
+    """Ex.: <pasta>/recibo_0001_2026-07-23_colegio-jardim.pdf (sem sobrescrever)."""
+    pasta_destino = Path(pasta_destino) if pasta_destino else pasta_recibos()
+    pasta_destino.mkdir(parents=True, exist_ok=True)
 
-    nome_base = f"recibo_{recibo.data.isoformat()}_{_slug(recibo.nome)}"
+    partes = ["recibo"]
+    if recibo.numero_recibo:
+        partes.append(recibo.numero_formatado)
+    partes += [recibo.data.isoformat(), _slug(recibo.nome)]
+    nome_base = "_".join(partes)
 
-    caminho = pasta / f"{nome_base}.pdf"
+    caminho = pasta_destino / f"{nome_base}.pdf"
     contador = 2
     while caminho.exists():
-        caminho = pasta / f"{nome_base}_{contador}.pdf"
+        caminho = pasta_destino / f"{nome_base}_{contador}.pdf"
         contador += 1
 
     return caminho
@@ -99,8 +97,15 @@ def _logo(caminho):
     return imagem
 
 
+def _titulo(recibo, estilos):
+    texto = "RECIBO"
+    if recibo.numero_recibo:
+        texto += f' <font name="Helvetica" size="12">Nº {recibo.numero_formatado}</font>'
+    return Paragraph(texto, estilos["titulo"])
+
+
 def _cabecalho(recibo, largura, estilos):
-    titulo = Paragraph("RECIBO", estilos["titulo"])
+    titulo = _titulo(recibo, estilos)
     valor = Paragraph(f"Valor: <b>{recibo.valor_formatado}</b>", estilos["valor"])
     logo = _logo(recibo.emitente_logo)
 
@@ -186,6 +191,8 @@ def gerar_pdf(recibo, caminho=None):
         + FOLGA
     )
 
+    titulo_doc = f"Recibo {recibo.numero_formatado} - {recibo.nome}".replace("  ", " ")
+
     doc = SimpleDocTemplate(
         str(caminho),
         pagesize=(LARGURA_PAGINA, altura_pagina),
@@ -193,7 +200,7 @@ def gerar_pdf(recibo, caminho=None):
         rightMargin=MARGEM_LATERAL,
         topMargin=MARGEM_VERTICAL,
         bottomMargin=MARGEM_VERTICAL,
-        title=f"Recibo - {recibo.nome}",
+        title=titulo_doc,
         author=recibo.emitente_nome,
     )
 

@@ -33,6 +33,14 @@ class Recibo:
     emitente_telefones: str = ""
     emitente_logo: str = ""  # caminho da imagem (PNG/JPG)
 
+    # Número sequencial (definido pelo banco de dados)
+    numero_recibo: int | None = None
+
+    @property
+    def numero_formatado(self):
+        """Ex.: 1 → '0001'."""
+        return f"{self.numero_recibo:04d}" if self.numero_recibo else ""
+
     @property
     def valor_formatado(self):
         return formatar_moeda(self.valor)
