@@ -18,9 +18,6 @@ from PySide6.QtWidgets import (
 
 from core.validacao import validar_cnpj, validar_cpf
 
-CIDADE_PADRAO = "São Gonçalo"
-ESTADO_PADRAO = "RJ"
-
 MASCARA_CPF = "000.000.000-00;_"
 MASCARA_CNPJ = ">NN.NNN.NNN/NNNN-00;_"  # N = letra ou número (CNPJ alfanumérico)
 
@@ -103,13 +100,10 @@ class JanelaPrincipal(QMainWindow):
         self.input_numero.setMaximumWidth(100)
 
         self.input_bairro = QLineEdit()
+        self.input_cidade = QLineEdit()
 
-        self.input_cidade = QLineEdit(CIDADE_PADRAO)
-        self.input_cidade.setReadOnly(True)
-
-        self.input_estado = QLineEdit(ESTADO_PADRAO)
-        self.input_estado.setReadOnly(True)
-        self.input_estado.setMaximumWidth(60)
+        self.input_estado = QLineEdit()
+        self.input_estado.setMaximumWidth(100)
 
         form.addRow("Rua:", self.input_rua)
         form.addRow("Número:", self.input_numero)
@@ -135,30 +129,27 @@ class JanelaPrincipal(QMainWindow):
 
     # ---------- Destaque de erros ----------
 
-    def _campos_validados(self):
+    def _campos_de_texto(self):
         return [
             self.input_nome,
             self.input_documento,
             self.input_produto,
-            self.input_valor,
             self.input_rua,
             self.input_numero,
             self.input_bairro,
+            self.input_cidade,
+            self.input_estado,
         ]
+
+    def _campos_validados(self):
+        return self._campos_de_texto() + [self.input_valor]
 
     def _marcar_erro(self, campo, erro):
         campo.setStyleSheet(ESTILO_ERRO if erro else "")
 
     def _conectar_limpeza_de_erros(self):
         """Tira o destaque vermelho assim que o usuário mexe no campo."""
-        for campo in (
-            self.input_nome,
-            self.input_documento,
-            self.input_produto,
-            self.input_rua,
-            self.input_numero,
-            self.input_bairro,
-        ):
+        for campo in self._campos_de_texto():
             campo.textChanged.connect(lambda _texto, c=campo: self._marcar_erro(c, False))
 
         self.input_valor.valueChanged.connect(
@@ -179,6 +170,8 @@ class JanelaPrincipal(QMainWindow):
             (self.input_rua, "Rua"),
             (self.input_numero, "Número"),
             (self.input_bairro, "Bairro"),
+            (self.input_cidade, "Cidade"),
+            (self.input_estado, "Estado"),
         ]
         for campo, rotulo in obrigatorios:
             vazio = not campo.text().strip()
@@ -238,8 +231,8 @@ class JanelaPrincipal(QMainWindow):
             "rua": self.input_rua.text().strip(),
             "numero": self.input_numero.text().strip(),
             "bairro": self.input_bairro.text().strip(),
-            "cidade": self.input_cidade.text(),
-            "estado": self.input_estado.text(),
+            "cidade": self.input_cidade.text().strip(),
+            "estado": self.input_estado.text().strip(),
         }
 
     def _gerar_pdf(self):
@@ -264,15 +257,13 @@ class JanelaPrincipal(QMainWindow):
 
     def _limpar(self):
         self.combo_tipo.setCurrentIndex(0)
-        self.input_nome.clear()
         self.input_documento.clear()
-        self.input_produto.clear()
         self.input_qtd.setValue(1)
         self.input_valor.setValue(0)
         self.input_data.setDate(QDate.currentDate())
-        self.input_rua.clear()
-        self.input_numero.clear()
-        self.input_bairro.clear()
+
+        for campo in self._campos_de_texto():
+            campo.clear()
 
         for campo in self._campos_validados():
             self._marcar_erro(campo, False)
