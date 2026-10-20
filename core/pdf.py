@@ -11,6 +11,12 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+# Página: largura do A4, altura calculada pelo conteúdo
+LARGURA_PAGINA = A4[0]
+MARGEM_LATERAL = 2.5 * cm
+MARGEM_VERTICAL = 1.5 * cm
+FOLGA = 1 * cm  # espaço extra para nada ser empurrado para outra página
+
 
 # ---------- Onde salvar ----------
 
@@ -119,34 +125,47 @@ def _rodape_emitente(recibo, estilos):
     return elementos
 
 
+def _altura_do_conteudo(elementos, largura):
+    """Soma a altura de todos os blocos do recibo."""
+    return sum(elemento.wrap(largura, 100 * cm)[1] for elemento in elementos)
+
+
 # ---------- Geração ----------
 
 def gerar_pdf(recibo, caminho=None):
     """Gera o PDF do recibo e retorna o caminho do arquivo salvo."""
     caminho = Path(caminho) if caminho else caminho_disponivel(recibo)
 
-    doc = SimpleDocTemplate(
-        str(caminho),
-        pagesize=A4,
-        leftMargin=2.5 * cm,
-        rightMargin=2.5 * cm,
-        topMargin=2.5 * cm,
-        bottomMargin=2.5 * cm,
-        title=f"Recibo - {recibo.nome}",
-        author=recibo.emitente_nome,
-    )
+    largura_util = LARGURA_PAGINA - 2 * MARGEM_LATERAL
     estilos = _estilos()
 
     elementos = [
-        _cabecalho(recibo, doc.width, estilos),
-        Spacer(1, 1.2 * cm),
+        _cabecalho(recibo, largura_util, estilos),
+        Spacer(1, 0.8 * cm),
         _corpo(recibo, estilos),
-        Spacer(1, 1 * cm),
+        Spacer(1, 0.6 * cm),
         Paragraph(escape(recibo.local_e_data()), estilos["data"]),
-        Spacer(1, 2.5 * cm),
+        Spacer(1, 1.8 * cm),
         _linha_assinatura(),
         *_rodape_emitente(recibo, estilos),
     ]
+
+    altura_pagina = (
+        _altura_do_conteudo(elementos, largura_util)
+        + 2 * MARGEM_VERTICAL
+        + FOLGA
+    )
+
+    doc = SimpleDocTemplate(
+        str(caminho),
+        pagesize=(LARGURA_PAGINA, altura_pagina),
+        leftMargin=MARGEM_LATERAL,
+        rightMargin=MARGEM_LATERAL,
+        topMargin=MARGEM_VERTICAL,
+        bottomMargin=MARGEM_VERTICAL,
+        title=f"Recibo - {recibo.nome}",
+        author=recibo.emitente_nome,
+    )
 
     doc.build(elementos)
     return caminho
