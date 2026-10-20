@@ -9,7 +9,8 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 # Página: largura do A4, altura calculada pelo conteúdo
 LARGURA_PAGINA = A4[0]
@@ -17,11 +18,15 @@ MARGEM_LATERAL = 2.5 * cm
 MARGEM_VERTICAL = 1.5 * cm
 FOLGA = 1 * cm  # espaço extra para nada ser empurrado para outra página
 
+# Tamanho máximo da logo no cabeçalho
+LOGO_ALTURA_MAX = 1.8 * cm
+LOGO_LARGURA_MAX = 4 * cm
+
 
 # ---------- Onde salvar ----------
 
 def pasta_recibos():
-    """Pasta 'recibos/' ao lado do projeto (ou ao lado do .exe)."""
+    """Pasta padrão 'recibos/' ao lado do projeto (ou ao lado do .exe)."""
     if getattr(sys, "frozen", False):
         base = Path(sys.executable).parent
     else:
@@ -39,9 +44,11 @@ def _slug(texto, limite=40):
     return texto[:limite].strip("-") or "cliente"
 
 
-def caminho_disponivel(recibo):
-    """Ex.: recibos/recibo_2026-07-23_colegio-jardim.pdf (sem sobrescrever)."""
-    pasta = pasta_recibos()
+def caminho_disponivel(recibo, pasta=None):
+    """Ex.: <pasta>/recibo_2026-07-23_colegio-jardim.pdf (sem sobrescrever)."""
+    pasta = Path(pasta) if pasta else pasta_recibos()
+    pasta.mkdir(parents=True, exist_ok=True)
+
     nome_base = f"recibo_{recibo.data.isoformat()}_{_slug(recibo.nome)}"
 
     caminho = pasta / f"{nome_base}.pdf"
@@ -76,14 +83,37 @@ def _estilos():
     }
 
 
+def _logo(caminho):
+    """Carrega a logo mantendo a proporção. Retorna None se não der para usar."""
+    if not caminho or not Path(caminho).is_file():
+        return None
+
+    try:
+        largura, altura = ImageReader(caminho).getSize()
+    except Exception:
+        return None
+
+    escala = min(LOGO_LARGURA_MAX / largura, LOGO_ALTURA_MAX / altura)
+    imagem = Image(caminho, width=largura * escala, height=altura * escala)
+    imagem.hAlign = "LEFT"
+    return imagem
+
+
 def _cabecalho(recibo, largura, estilos):
-    tabela = Table(
-        [[
-            Paragraph("RECIBO", estilos["titulo"]),
-            Paragraph(f"Valor: <b>{recibo.valor_formatado}</b>", estilos["valor"]),
-        ]],
-        colWidths=[largura / 2, largura / 2],
-    )
+    titulo = Paragraph("RECIBO", estilos["titulo"])
+    valor = Paragraph(f"Valor: <b>{recibo.valor_formatado}</b>", estilos["valor"])
+    logo = _logo(recibo.emitente_logo)
+
+    if logo:
+        largura_logo = logo.drawWidth + 0.5 * cm
+        resto = largura - largura_logo
+        tabela = Table(
+            [[logo, titulo, valor]],
+            colWidths=[largura_logo, resto / 2, resto / 2],
+        )
+    else:
+        tabela = Table([[titulo, valor]], colWidths=[largura / 2, largura / 2])
+
     tabela.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LINEBELOW", (0, 0), (-1, 0), 1, colors.black),

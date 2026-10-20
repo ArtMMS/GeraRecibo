@@ -29,8 +29,9 @@ class Recibo:
     cidade: str
     estado: str
 
-    # Opcional
+    # Opcionais
     emitente_telefones: str = ""
+    emitente_logo: str = ""  # caminho da imagem (PNG/JPG)
 
     @property
     def valor_formatado(self):
