@@ -47,10 +47,10 @@ def valor_por_extenso(valor):
 
 
 def quantidade_por_extenso(quantidade):
-    """Ex.: 1 → '1 (uma) unidade' · 3 → '3 (três) unidades'."""
+    """Ex.: 1 → 'uma unidade' · 3 → 'três unidades'."""
     extenso = numero_por_extenso(quantidade, feminino=True)
     unidade = "unidade" if quantidade == 1 else "unidades"
-    return f"{quantidade} ({extenso}) {unidade}"
+    return f"{extenso} {unidade}"
 
 
 def formatar_moeda(valor):

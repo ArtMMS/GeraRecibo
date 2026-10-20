@@ -16,10 +16,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.pdf import gerar_pdf
+from core.recibo import Recibo
 from core.validacao import validar_cnpj, validar_cpf
 
 MASCARA_CPF = "000.000.000-00;_"
 MASCARA_CNPJ = ">NN.NNN.NNN/NNNN-00;_"  # N = letra ou número (CNPJ alfanumérico)
+
+TIPOS_DOCUMENTO = ["Pessoa física (CPF)", "Empresa (CNPJ)"]
 
 ESTILO_ERRO = "border: 1px solid #d9534f; border-radius: 3px;"
 
@@ -34,6 +38,7 @@ class JanelaPrincipal(QMainWindow):
         self.layout_principal = QVBoxLayout(central)
         self.setCentralWidget(central)
 
+        self.layout_principal.addWidget(self._criar_grupo_emitente())
         self.layout_principal.addWidget(self._criar_grupo_cliente())
         self.layout_principal.addWidget(self._criar_grupo_pedido())
         self.layout_principal.addWidget(self._criar_grupo_endereco())
@@ -44,13 +49,46 @@ class JanelaPrincipal(QMainWindow):
 
     # ---------- Grupos do formulário ----------
 
+    def _criar_grupo_emitente(self):
+        grupo = QGroupBox("Emitente (quem recebe)")
+        form = QFormLayout(grupo)
+
+        self.combo_tipo_emitente = QComboBox()
+        self.combo_tipo_emitente.addItems(TIPOS_DOCUMENTO)
+
+        self.label_nome_emitente = QLabel()
+        self.input_nome_emitente = QLineEdit()
+
+        self.label_documento_emitente = QLabel()
+        self.input_documento_emitente = QLineEdit()
+
+        self.input_telefones = QLineEdit()
+
+        self.combo_tipo_emitente.currentIndexChanged.connect(
+            lambda indice: self._aplicar_tipo(
+                indice,
+                self.label_nome_emitente,
+                self.label_documento_emitente,
+                self.input_documento_emitente,
+            )
+        )
+
+        form.addRow("Tipo:", self.combo_tipo_emitente)
+        form.addRow(self.label_nome_emitente, self.input_nome_emitente)
+        form.addRow(self.label_documento_emitente, self.input_documento_emitente)
+        form.addRow("Telefones (opcional):", self.input_telefones)
+
+        self._aplicar_tipo(
+            0, self.label_nome_emitente, self.label_documento_emitente, self.input_documento_emitente
+        )
+        return grupo
+
     def _criar_grupo_cliente(self):
-        grupo = QGroupBox("Cliente")
+        grupo = QGroupBox("Cliente (quem paga)")
         form = QFormLayout(grupo)
 
         self.combo_tipo = QComboBox()
-        self.combo_tipo.addItems(["Pessoa física (CPF)", "Empresa (CNPJ)"])
-        self.combo_tipo.currentIndexChanged.connect(self._ao_mudar_tipo)
+        self.combo_tipo.addItems(TIPOS_DOCUMENTO)
 
         self.label_nome = QLabel()
         self.input_nome = QLineEdit()
@@ -58,11 +96,17 @@ class JanelaPrincipal(QMainWindow):
         self.label_documento = QLabel()
         self.input_documento = QLineEdit()
 
-        form.addRow("Tipo de cliente:", self.combo_tipo)
+        self.combo_tipo.currentIndexChanged.connect(
+            lambda indice: self._aplicar_tipo(
+                indice, self.label_nome, self.label_documento, self.input_documento
+            )
+        )
+
+        form.addRow("Tipo:", self.combo_tipo)
         form.addRow(self.label_nome, self.input_nome)
         form.addRow(self.label_documento, self.input_documento)
 
-        self._ao_mudar_tipo(0)
+        self._aplicar_tipo(0, self.label_nome, self.label_documento, self.input_documento)
         return grupo
 
     def _criar_grupo_pedido(self):
@@ -127,9 +171,17 @@ class JanelaPrincipal(QMainWindow):
         layout.addWidget(self.botao_gerar)
         return layout
 
-    # ---------- Destaque de erros ----------
+    # ---------- Listas de campos ----------
 
-    def _campos_de_texto(self):
+    def _campos_emitente(self):
+        return [
+            self.input_nome_emitente,
+            self.input_documento_emitente,
+            self.input_telefones,
+        ]
+
+    def _campos_do_recibo(self):
+        """Campos que mudam a cada recibo (são apagados pelo botão Limpar)."""
         return [
             self.input_nome,
             self.input_documento,
@@ -141,8 +193,13 @@ class JanelaPrincipal(QMainWindow):
             self.input_estado,
         ]
 
+    def _campos_de_texto(self):
+        return self._campos_emitente() + self._campos_do_recibo()
+
     def _campos_validados(self):
         return self._campos_de_texto() + [self.input_valor]
+
+    # ---------- Destaque de erros ----------
 
     def _marcar_erro(self, campo, erro):
         campo.setStyleSheet(ESTILO_ERRO if erro else "")
@@ -158,14 +215,34 @@ class JanelaPrincipal(QMainWindow):
 
     # ---------- Validação ----------
 
+    def _validar_documento(self, campo, pessoa_fisica, contexto, erros):
+        """Confere CPF/CNPJ de um campo e adiciona os erros na lista."""
+        rotulo = "CPF" if pessoa_fisica else "CNPJ"
+        documento = campo.text()
+        preenchido = any(ch.isalnum() for ch in documento)
+
+        if not preenchido:
+            erros.append(f"Preencha o {rotulo} {contexto}.")
+            self._marcar_erro(campo, True)
+        elif not campo.hasAcceptableInput():
+            erros.append(f"{rotulo} {contexto} incompleto.")
+            self._marcar_erro(campo, True)
+        else:
+            valido = validar_cpf(documento) if pessoa_fisica else validar_cnpj(documento)
+            self._marcar_erro(campo, not valido)
+            if not valido:
+                erros.append(f"{rotulo} {contexto} inválido. Confira o que foi digitado.")
+
     def _validar(self):
         """Confere o formulário. Retorna a lista de erros (vazia = tudo certo)."""
         erros = []
-        pessoa_fisica = self.combo_tipo.currentIndex() == 0
+        emitente_pf = self.combo_tipo_emitente.currentIndex() == 0
+        cliente_pf = self.combo_tipo.currentIndex() == 0
 
         # Campos de texto obrigatórios
         obrigatorios = [
-            (self.input_nome, "Nome" if pessoa_fisica else "Razão social"),
+            (self.input_nome_emitente, "Nome do emitente" if emitente_pf else "Razão social do emitente"),
+            (self.input_nome, "Nome do cliente" if cliente_pf else "Razão social do cliente"),
             (self.input_produto, "Produto vendido"),
             (self.input_rua, "Rua"),
             (self.input_numero, "Número"),
@@ -180,21 +257,8 @@ class JanelaPrincipal(QMainWindow):
                 erros.append(f"Preencha o campo {rotulo}.")
 
         # CPF / CNPJ
-        rotulo_doc = "CPF" if pessoa_fisica else "CNPJ"
-        documento = self.input_documento.text()
-        preenchido = any(ch.isalnum() for ch in documento)
-
-        if not preenchido:
-            erros.append(f"Preencha o {rotulo_doc}.")
-            self._marcar_erro(self.input_documento, True)
-        elif not self.input_documento.hasAcceptableInput():
-            erros.append(f"{rotulo_doc} incompleto.")
-            self._marcar_erro(self.input_documento, True)
-        else:
-            valido = validar_cpf(documento) if pessoa_fisica else validar_cnpj(documento)
-            self._marcar_erro(self.input_documento, not valido)
-            if not valido:
-                erros.append(f"{rotulo_doc} inválido. Confira o que foi digitado.")
+        self._validar_documento(self.input_documento_emitente, emitente_pf, "do emitente", erros)
+        self._validar_documento(self.input_documento, cliente_pf, "do cliente", erros)
 
         # Valor
         valor_ok = self.input_valor.value() > 0
@@ -206,34 +270,39 @@ class JanelaPrincipal(QMainWindow):
 
     # ---------- Comportamento ----------
 
-    def _ao_mudar_tipo(self, indice):
+    def _aplicar_tipo(self, indice, label_nome, label_documento, input_documento):
+        """Troca rótulos e máscara entre pessoa física (CPF) e empresa (CNPJ)."""
         if indice == 0:
-            self.label_nome.setText("Nome:")
-            self.label_documento.setText("CPF:")
-            self.input_documento.setInputMask(MASCARA_CPF)
+            label_nome.setText("Nome:")
+            label_documento.setText("CPF:")
+            input_documento.setInputMask(MASCARA_CPF)
         else:
-            self.label_nome.setText("Razão social:")
-            self.label_documento.setText("CNPJ:")
-            self.input_documento.setInputMask(MASCARA_CNPJ)
+            label_nome.setText("Razão social:")
+            label_documento.setText("CNPJ:")
+            input_documento.setInputMask(MASCARA_CNPJ)
 
-        self.input_documento.clear()
+        input_documento.clear()
 
     def _coletar_dados(self):
-        """Junta tudo o que foi preenchido em um dicionário."""
-        return {
-            "tipo": "CPF" if self.combo_tipo.currentIndex() == 0 else "CNPJ",
-            "nome": self.input_nome.text().strip(),
-            "documento": self.input_documento.text().strip(),
-            "produto": self.input_produto.text().strip(),
-            "quantidade": self.input_qtd.value(),
-            "valor": self.input_valor.value(),
-            "data": self.input_data.date().toString("dd/MM/yyyy"),
-            "rua": self.input_rua.text().strip(),
-            "numero": self.input_numero.text().strip(),
-            "bairro": self.input_bairro.text().strip(),
-            "cidade": self.input_cidade.text().strip(),
-            "estado": self.input_estado.text().strip(),
-        }
+        """Monta o Recibo com o que foi preenchido no formulário."""
+        return Recibo(
+            emitente_tipo_documento="CPF" if self.combo_tipo_emitente.currentIndex() == 0 else "CNPJ",
+            emitente_nome=self.input_nome_emitente.text().strip(),
+            emitente_documento=self.input_documento_emitente.text().strip(),
+            emitente_telefones=self.input_telefones.text().strip(),
+            tipo_documento="CPF" if self.combo_tipo.currentIndex() == 0 else "CNPJ",
+            nome=self.input_nome.text().strip(),
+            documento=self.input_documento.text().strip(),
+            produto=self.input_produto.text().strip(),
+            quantidade=self.input_qtd.value(),
+            valor=self.input_valor.value(),
+            data=self.input_data.date().toPython(),
+            rua=self.input_rua.text().strip(),
+            numero=self.input_numero.text().strip(),
+            bairro=self.input_bairro.text().strip(),
+            cidade=self.input_cidade.text().strip(),
+            estado=self.input_estado.text().strip(),
+        )
 
     def _gerar_pdf(self):
         erros = self._validar()
@@ -245,24 +314,37 @@ class JanelaPrincipal(QMainWindow):
             )
             return
 
-        dados = self._coletar_dados()
-        print(dados)  # Provisório: a geração real do PDF entra na Fase 3
+        recibo = self._coletar_dados()
+
+        try:
+            caminho = gerar_pdf(recibo)
+        except PermissionError:
+            QMessageBox.critical(
+                self,
+                "Erro ao salvar",
+                "Não foi possível salvar o PDF.\n\n"
+                "Verifique se a pasta 'recibos' não está protegida "
+                "ou se o arquivo não está aberto em outro programa.",
+            )
+            return
+        except Exception as erro:
+            QMessageBox.critical(self, "Erro", f"Não foi possível gerar o PDF.\n\n{erro}")
+            return
 
         QMessageBox.information(
             self,
-            "Gerar PDF",
-            "Dados coletados! (veja no terminal)\n\n"
-            "A geração do PDF será feita na Fase 3.",
+            "Recibo gerado",
+            f"Recibo salvo com sucesso!\n\n{caminho}",
         )
 
     def _limpar(self):
+        """Limpa cliente, pedido e endereço. Os dados do emitente são mantidos."""
         self.combo_tipo.setCurrentIndex(0)
-        self.input_documento.clear()
         self.input_qtd.setValue(1)
         self.input_valor.setValue(0)
         self.input_data.setDate(QDate.currentDate())
 
-        for campo in self._campos_de_texto():
+        for campo in self._campos_do_recibo():
             campo.clear()
 
         for campo in self._campos_validados():
