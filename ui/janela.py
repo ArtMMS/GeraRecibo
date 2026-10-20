@@ -16,8 +16,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.validacao import validar_cnpj, validar_cpf
+
 CIDADE_PADRAO = "São Gonçalo"
 ESTADO_PADRAO = "RJ"
+
+MASCARA_CPF = "000.000.000-00;_"
+MASCARA_CNPJ = ">NN.NNN.NNN/NNNN-00;_"  # N = letra ou número (CNPJ alfanumérico)
+
+ESTILO_ERRO = "border: 1px solid #d9534f; border-radius: 3px;"
 
 
 class JanelaPrincipal(QMainWindow):
@@ -35,6 +42,8 @@ class JanelaPrincipal(QMainWindow):
         self.layout_principal.addWidget(self._criar_grupo_endereco())
         self.layout_principal.addStretch()
         self.layout_principal.addLayout(self._criar_botoes())
+
+        self._conectar_limpeza_de_erros()
 
     # ---------- Grupos do formulário ----------
 
@@ -124,17 +133,97 @@ class JanelaPrincipal(QMainWindow):
         layout.addWidget(self.botao_gerar)
         return layout
 
+    # ---------- Destaque de erros ----------
+
+    def _campos_validados(self):
+        return [
+            self.input_nome,
+            self.input_documento,
+            self.input_produto,
+            self.input_valor,
+            self.input_rua,
+            self.input_numero,
+            self.input_bairro,
+        ]
+
+    def _marcar_erro(self, campo, erro):
+        campo.setStyleSheet(ESTILO_ERRO if erro else "")
+
+    def _conectar_limpeza_de_erros(self):
+        """Tira o destaque vermelho assim que o usuário mexe no campo."""
+        for campo in (
+            self.input_nome,
+            self.input_documento,
+            self.input_produto,
+            self.input_rua,
+            self.input_numero,
+            self.input_bairro,
+        ):
+            campo.textChanged.connect(lambda _texto, c=campo: self._marcar_erro(c, False))
+
+        self.input_valor.valueChanged.connect(
+            lambda _valor: self._marcar_erro(self.input_valor, False)
+        )
+
+    # ---------- Validação ----------
+
+    def _validar(self):
+        """Confere o formulário. Retorna a lista de erros (vazia = tudo certo)."""
+        erros = []
+        pessoa_fisica = self.combo_tipo.currentIndex() == 0
+
+        # Campos de texto obrigatórios
+        obrigatorios = [
+            (self.input_nome, "Nome" if pessoa_fisica else "Razão social"),
+            (self.input_produto, "Produto vendido"),
+            (self.input_rua, "Rua"),
+            (self.input_numero, "Número"),
+            (self.input_bairro, "Bairro"),
+        ]
+        for campo, rotulo in obrigatorios:
+            vazio = not campo.text().strip()
+            self._marcar_erro(campo, vazio)
+            if vazio:
+                erros.append(f"Preencha o campo {rotulo}.")
+
+        # CPF / CNPJ
+        rotulo_doc = "CPF" if pessoa_fisica else "CNPJ"
+        documento = self.input_documento.text()
+        preenchido = any(ch.isalnum() for ch in documento)
+
+        if not preenchido:
+            erros.append(f"Preencha o {rotulo_doc}.")
+            self._marcar_erro(self.input_documento, True)
+        elif not self.input_documento.hasAcceptableInput():
+            erros.append(f"{rotulo_doc} incompleto.")
+            self._marcar_erro(self.input_documento, True)
+        else:
+            valido = validar_cpf(documento) if pessoa_fisica else validar_cnpj(documento)
+            self._marcar_erro(self.input_documento, not valido)
+            if not valido:
+                erros.append(f"{rotulo_doc} inválido. Confira o que foi digitado.")
+
+        # Valor
+        valor_ok = self.input_valor.value() > 0
+        self._marcar_erro(self.input_valor, not valor_ok)
+        if not valor_ok:
+            erros.append("O valor do pedido precisa ser maior que zero.")
+
+        return erros
+
     # ---------- Comportamento ----------
 
     def _ao_mudar_tipo(self, indice):
         if indice == 0:
             self.label_nome.setText("Nome:")
             self.label_documento.setText("CPF:")
-            self.input_documento.setPlaceholderText("000.000.000-00")
+            self.input_documento.setInputMask(MASCARA_CPF)
         else:
             self.label_nome.setText("Razão social:")
             self.label_documento.setText("CNPJ:")
-            self.input_documento.setPlaceholderText("00.000.000/0000-00")
+            self.input_documento.setInputMask(MASCARA_CNPJ)
+
+        self.input_documento.clear()
 
     def _coletar_dados(self):
         """Junta tudo o que foi preenchido em um dicionário."""
@@ -154,6 +243,15 @@ class JanelaPrincipal(QMainWindow):
         }
 
     def _gerar_pdf(self):
+        erros = self._validar()
+        if erros:
+            QMessageBox.warning(
+                self,
+                "Confira os dados",
+                "Corrija os campos destacados:\n\n" + "\n".join(f"• {e}" for e in erros),
+            )
+            return
+
         dados = self._coletar_dados()
         print(dados)  # Provisório: a geração real do PDF entra na Fase 3
 
@@ -175,4 +273,8 @@ class JanelaPrincipal(QMainWindow):
         self.input_rua.clear()
         self.input_numero.clear()
         self.input_bairro.clear()
+
+        for campo in self._campos_validados():
+            self._marcar_erro(campo, False)
+
         self.input_nome.setFocus()
