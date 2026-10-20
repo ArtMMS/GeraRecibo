@@ -1,8 +1,16 @@
-from PySide6.QtCore import QDate
+import shutil
+import tempfile
+from pathlib import Path
+
+from PySide6.QtCore import QDate, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDateEdit,
+    QDialog,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -16,9 +24,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.pdf import gerar_pdf
+from core.pdf import caminho_disponivel, gerar_pdf, pasta_recibos
 from core.recibo import Recibo
 from core.validacao import validar_cnpj, validar_cpf
+from ui.area_logo import AreaLogo
+from ui.preview import DialogoPreview
 
 MASCARA_CPF = "000.000.000-00;_"
 MASCARA_CNPJ = ">NN.NNN.NNN/NNNN-00;_"  # N = letra ou número (CNPJ alfanumérico)
@@ -34,6 +44,8 @@ class JanelaPrincipal(QMainWindow):
         self.setWindowTitle("Gerador de Recibos")
         self.setMinimumWidth(480)
 
+        self.pasta_destino = pasta_recibos()
+
         central = QWidget()
         self.layout_principal = QVBoxLayout(central)
         self.setCentralWidget(central)
@@ -42,6 +54,7 @@ class JanelaPrincipal(QMainWindow):
         self.layout_principal.addWidget(self._criar_grupo_cliente())
         self.layout_principal.addWidget(self._criar_grupo_pedido())
         self.layout_principal.addWidget(self._criar_grupo_endereco())
+        self.layout_principal.addWidget(self._criar_grupo_arquivo())
         self.layout_principal.addStretch()
         self.layout_principal.addLayout(self._criar_botoes())
 
@@ -64,6 +77,8 @@ class JanelaPrincipal(QMainWindow):
 
         self.input_telefones = QLineEdit()
 
+        self.area_logo = AreaLogo()
+
         self.combo_tipo_emitente.currentIndexChanged.connect(
             lambda indice: self._aplicar_tipo(
                 indice,
@@ -77,6 +92,7 @@ class JanelaPrincipal(QMainWindow):
         form.addRow(self.label_nome_emitente, self.input_nome_emitente)
         form.addRow(self.label_documento_emitente, self.input_documento_emitente)
         form.addRow("Telefones (opcional):", self.input_telefones)
+        form.addRow("Logo (opcional):", self.area_logo)
 
         self._aplicar_tipo(
             0, self.label_nome_emitente, self.label_documento_emitente, self.input_documento_emitente
@@ -154,6 +170,29 @@ class JanelaPrincipal(QMainWindow):
         form.addRow("Bairro:", self.input_bairro)
         form.addRow("Cidade:", self.input_cidade)
         form.addRow("Estado:", self.input_estado)
+        return grupo
+
+    def _criar_grupo_arquivo(self):
+        grupo = QGroupBox("Arquivo")
+        form = QFormLayout(grupo)
+
+        self.input_pasta = QLineEdit()
+        self.input_pasta.setReadOnly(True)
+
+        self.botao_pasta = QPushButton("Alterar...")
+        self.botao_pasta.clicked.connect(self._escolher_pasta)
+
+        linha_pasta = QHBoxLayout()
+        linha_pasta.addWidget(self.input_pasta)
+        linha_pasta.addWidget(self.botao_pasta)
+
+        self.check_abrir = QCheckBox("Abrir o PDF depois de salvar")
+        self.check_abrir.setChecked(True)
+
+        form.addRow("Salvar em:", linha_pasta)
+        form.addRow("", self.check_abrir)
+
+        self._mostrar_pasta()
         return grupo
 
     def _criar_botoes(self):
@@ -283,6 +322,19 @@ class JanelaPrincipal(QMainWindow):
 
         input_documento.clear()
 
+    def _mostrar_pasta(self):
+        self.input_pasta.setText(str(self.pasta_destino))
+        self.input_pasta.setToolTip(str(self.pasta_destino))
+        self.input_pasta.setCursorPosition(0)
+
+    def _escolher_pasta(self):
+        pasta = QFileDialog.getExistingDirectory(
+            self, "Escolher pasta dos recibos", str(self.pasta_destino)
+        )
+        if pasta:
+            self.pasta_destino = Path(pasta)
+            self._mostrar_pasta()
+
     def _coletar_dados(self):
         """Monta o Recibo com o que foi preenchido no formulário."""
         return Recibo(
@@ -290,6 +342,7 @@ class JanelaPrincipal(QMainWindow):
             emitente_nome=self.input_nome_emitente.text().strip(),
             emitente_documento=self.input_documento_emitente.text().strip(),
             emitente_telefones=self.input_telefones.text().strip(),
+            emitente_logo=self.area_logo.caminho,
             tipo_documento="CPF" if self.combo_tipo.currentIndex() == 0 else "CNPJ",
             nome=self.input_nome.text().strip(),
             documento=self.input_documento.text().strip(),
@@ -316,29 +369,49 @@ class JanelaPrincipal(QMainWindow):
 
         recibo = self._coletar_dados()
 
-        try:
-            caminho = gerar_pdf(recibo)
-        except PermissionError:
-            QMessageBox.critical(
-                self,
-                "Erro ao salvar",
-                "Não foi possível salvar o PDF.\n\n"
-                "Verifique se a pasta 'recibos' não está protegida "
-                "ou se o arquivo não está aberto em outro programa.",
-            )
-            return
-        except Exception as erro:
-            QMessageBox.critical(self, "Erro", f"Não foi possível gerar o PDF.\n\n{erro}")
-            return
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as pasta_temp:
+            previa = Path(pasta_temp) / "previa.pdf"
 
-        QMessageBox.information(
-            self,
-            "Recibo gerado",
-            f"Recibo salvo com sucesso!\n\n{caminho}",
-        )
+            # 1. Gera uma prévia temporária
+            try:
+                gerar_pdf(recibo, previa)
+            except Exception as erro:
+                QMessageBox.critical(self, "Erro", f"Não foi possível gerar o PDF.\n\n{erro}")
+                return
+
+            # 2. Mostra a prévia
+            dialogo = DialogoPreview(previa, self)
+            if dialogo.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            # 3. Salva na pasta escolhida
+            try:
+                destino = caminho_disponivel(recibo, self.pasta_destino)
+                shutil.copyfile(previa, destino)
+            except PermissionError:
+                QMessageBox.critical(
+                    self,
+                    "Erro ao salvar",
+                    "Não foi possível salvar o PDF.\n\n"
+                    "Verifique se você tem permissão para gravar na pasta escolhida.",
+                )
+                return
+            except OSError as erro:
+                QMessageBox.critical(self, "Erro ao salvar", f"Não foi possível salvar o PDF.\n\n{erro}")
+                return
+
+        # 4. Abre o PDF ou avisa onde ficou
+        if self.check_abrir.isChecked():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(destino)))
+        else:
+            QMessageBox.information(
+                self,
+                "Recibo salvo",
+                f"Recibo salvo com sucesso!\n\n{destino}",
+            )
 
     def _limpar(self):
-        """Limpa cliente, pedido e endereço. Os dados do emitente são mantidos."""
+        """Limpa cliente, pedido e endereço. Os dados do emitente (e a logo) são mantidos."""
         self.combo_tipo.setCurrentIndex(0)
         self.input_qtd.setValue(1)
         self.input_valor.setValue(0)
