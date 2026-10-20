@@ -1,0 +1,17 @@
+.venv/
+
+__pycache__/
+*.pyc
+
+recibos/*
+!recibos/.gitkeep
+
+build/
+dist/
+*.spec
+
+.vscode/
+.idea/
+Thumbs.db
+
+ROADMAP.md
